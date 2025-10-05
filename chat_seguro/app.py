@@ -1,8 +1,11 @@
 from __future__ import annotations
+
+from core import auth
 import argparse
 import sqlite3
 from pathlib import Path
 import sys
+
 
 # Rutas
 ROOT = Path(__file__).resolve().parent.parent  # .../cryptoboss-lab/chat_seguro
@@ -29,14 +32,14 @@ def cmd_pki_init_root(args: argparse.Namespace) -> None:
     print("[PKI] init-root (pendiente de implementar)")
 
 
-def cmd_register(args: argparse.Namespace) -> None:
-    # TODO: Implementar registro (hash de contraseña con bcrypt/PBKDF2)
-    print(f"[AUTH] register usuario={args.user} (pendiente de implementar)")
+def cmd_register(args):
+    password = input("Introduce una contraseña: ")
+    auth.register_user(args.user, password)
 
 
-def cmd_login(args: argparse.Namespace) -> None:
-    # TODO: Implementar verificación de contraseña
-    print(f"[AUTH] login usuario={args.user} (pendiente de implementar)")
+def cmd_login(args):
+    password = input("Introduce tu contraseña: ")
+    auth.verify_login(args.user, password)
 
 
 def cmd_send(args: argparse.Namespace) -> None:
