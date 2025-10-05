@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environment
+.venv/
+
+# IDE files
+.idea/
+.vscode/
+
+# OS files
+Thumbs.db
+desktop.ini
