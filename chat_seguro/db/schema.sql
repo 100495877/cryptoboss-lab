@@ -4,6 +4,7 @@ CREATE TABLE IF NOT EXISTS users(
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     username   TEXT UNIQUE NOT NULL,
     pwd_hash   TEXT NOT NULL,
+    encrypted_private_key BLOB,  -- clave privada cifrada (añadida para keystore)
     cert_pem   TEXT,         -- certificado X.509 del usuario (PEM)
     pubkey_pem TEXT,         -- clave pública (si la guardamos aparte)
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
