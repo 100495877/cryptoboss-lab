@@ -13,9 +13,8 @@ from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from cryptography.hazmat.backends import default_backend
 
 
-# ==============================
+
 #  DERIVACIÓN DE CLAVES (PBKDF2)
-# ==============================
 def derive_key_from_password(password: str, salt: bytes, length: int = 32) -> bytes:
     """
     Deriva una clave criptográfica a partir de una contraseña usando PBKDF2-HMAC-SHA256.
@@ -38,9 +37,7 @@ def derive_key_from_password(password: str, salt: bytes, length: int = 32) -> by
     return kdf.derive(password.encode('utf-8'))
 
 
-# ==============================
 #  CIFRADO SIMÉTRICO (AES-GCM)
-# ==============================
 def encrypt_message_aes_gcm(plaintext: str) -> tuple[bytes, bytes, bytes, bytes]:
     """
     Cifra un mensaje con AES-256-GCM.
@@ -71,9 +68,7 @@ def decrypt_message_aes_gcm(ciphertext: bytes, key: bytes, nonce: bytes, tag: by
     return plaintext_bytes.decode('utf-8')
 
 
-# ==============================
 #  CIFRADO ASIMÉTRICO (RSA-OAEP)
-# ==============================
 def generate_rsa_keypair(key_size: int = 2048) -> tuple:
     """
     Genera un par de claves RSA (privada y pública).
@@ -117,9 +112,7 @@ def decrypt_session_key_rsa_oaep(encrypted_key: bytes, private_key) -> bytes:
     return session_key
 
 
-# ==============================
 #  SERIALIZACIÓN DE CLAVES
-# ==============================
 def serialize_private_key(private_key, password: str = None) -> bytes:
     """
     Convierte la clave privada RSA a formato PEM.

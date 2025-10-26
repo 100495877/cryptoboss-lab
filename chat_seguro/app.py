@@ -6,22 +6,15 @@ import sqlite3
 import sys
 from pathlib import Path
 from getpass import getpass
-from datetime import datetime
-
-# Núcleo propio
 from core import auth
 from core import crypto
-from core import keystore
-
-# Crypto primitives para firma (usadas aquí para no tocar tu crypto.py)
-from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding as asy_padding
 
 # Rutas
 ROOT = Path(__file__).resolve().parent.parent  # .../cryptoboss-lab/chat_seguro
 DB_PATH = ROOT / "chat.db"
 SCHEMA_PATH = ROOT / "chat_seguro" / "db" / "schema.sql"
-KEYSTORE_DIR = ROOT / "keystore"  # guardamos aquí las privadas cifradas
 
 
 # ==============================
@@ -33,6 +26,7 @@ def db() -> sqlite3.Connection:
 
 def audit(user: str | None, action: str, algo: str | None = None,
           key_bits: int | None = None, details: str | None = None) -> None:
+    """Registra eventos en la tabla audit (no interrumpe el flujo principal)."""
     try:
         with db() as con:
             con.execute(
@@ -40,32 +34,20 @@ def audit(user: str | None, action: str, algo: str | None = None,
                 (user, action, algo, key_bits, details),
             )
     except Exception:
-        # audit nunca debe romper el flujo principal
         pass
 
 
 def get_user_pubkey_pem(username: str) -> bytes | None:
+    """Obtiene la clave pública de un usuario en formato PEM."""
     with db() as con:
         cur = con.execute("SELECT pubkey_pem FROM users WHERE username=?", (username,))
         row = cur.fetchone()
         if not row or not row[0]:
             return None
-        # Está guardado como TEXT; convertir a bytes
         return row[0].encode("utf-8") if isinstance(row[0], str) else row[0]
 
 
-def ensure_keystore_dir() -> None:
-    KEYSTORE_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def user_privkey_path(username: str) -> Path:
-    ensure_keystore_dir()
-    return KEYSTORE_DIR / f"{username}.priv.blob"
-
-
-# ==============================
 # Inicialización de BD
-# ==============================
 def init_db(force: bool = False) -> None:
     """Crea la base de datos si no existe (o la recrea si force=True)."""
     if force and DB_PATH.exists():
@@ -79,11 +61,8 @@ def init_db(force: bool = False) -> None:
     print(f"[DB] Inicializada en {DB_PATH}")
 
 
-# ==============================
 # Comandos
-# ==============================
 def cmd_pki_init_root(_: argparse.Namespace) -> None:
-    # Placeholder (para el Lab 2 o eval. siguiente)
     print("[PKI] init-root (pendiente de implementar)")
     audit(None, "PKI_INIT_ROOT")
 
@@ -100,27 +79,27 @@ def cmd_register(args: argparse.Namespace) -> None:
     if not ok:
         return
 
-    # Generar par RSA y guardar pública en BD; privada cifrada en keystore
+    # Generar par RSA y guardar pública/privada en PEM
     print("[KEYGEN] Generando par RSA 3072 bits…")
     priv, pub = crypto.generate_rsa_keypair(key_size=3072)
 
     pub_pem = crypto.serialize_public_key(pub).decode("utf-8")
-    priv_blob_path = user_privkey_path(username)
-    keystore.save_encrypted_private_key(
-        private_key=priv,
-        password=pwd1,
-        username=username,
-        storage_path=str(priv_blob_path),
-    )
+    priv_pem = crypto.serialize_private_key(priv).decode("utf-8")
 
+    # Guardar pública en BD
     with db() as con:
         con.execute(
             "UPDATE users SET pubkey_pem=? WHERE username=?",
             (pub_pem, username),
         )
 
-    audit(username, "REGISTER", "RSA-PSS|RSA-OAEP|AES-256-GCM", 3072, f"priv={priv_blob_path.name}")
-    print(f"[OK] Usuario '{username}' listo. Clave pública almacenada y privada cifrada en keystore.")
+    # Guardar privada sin cifrar (solo Lab1)
+    priv_path = Path(f"{username}_private.pem")
+    priv_path.write_text(priv_pem)
+    print(f"[OK] Clave privada guardada en {priv_path}")
+
+    audit(username, "REGISTER", "RSA-PSS|RSA-OAEP|AES-256-GCM", 3072, f"priv={priv_path.name}")
+    print(f"[OK] Usuario '{username}' registrado y listo.")
 
 
 def cmd_login(args: argparse.Namespace) -> None:
@@ -128,14 +107,11 @@ def cmd_login(args: argparse.Namespace) -> None:
     pwd = getpass("Introduce tu contraseña: ")
     if auth.verify_login(username, pwd):
         audit(username, "LOGIN")
-    # No mantenemos sesión persistente; el resto de comandos pedirá credenciales si las necesita.
 
 
 def cmd_send(args: argparse.Namespace) -> None:
-    # Para simplificar, pedimos el emisor aquí (no hay sesión global)
     sender = input("Tu usuario (emisor): ").strip()
     pwd = getpass("Tu contraseña: ")
-    # Verificar credenciales antes de usar la privada
     if not auth.verify_login(sender, pwd):
         return
 
@@ -155,16 +131,15 @@ def cmd_send(args: argparse.Namespace) -> None:
     # 3) Envolver la clave de sesión con RSA-OAEP (pública del destinatario)
     enc_key = crypto.encrypt_session_key_rsa_oaep(session_key, recipient_pub)
 
-    # 4) Firmar el paquete con la privada del emisor (RSA-PSS)
-    #    Cargamos la privada cifrada del keystore
-    priv_blob_path = user_privkey_path(sender)
-    if not priv_blob_path.exists():
-        print(f"[ERR] El emisor '{sender}' no tiene clave privada en keystore.")
+    # 4) Firmar el paquete con la privada del emisor
+    priv_path = Path(f"{sender}_private.pem")
+    if not priv_path.exists():
+        print(f"[ERR] No se encontró la clave privada de '{sender}' ({priv_path}).")
         return
-    priv_blob = priv_blob_path.read_bytes()
-    sender_priv = keystore.load_encrypted_private_key(priv_blob, pwd)
+    priv_pem = priv_path.read_text()
+    sender_priv = crypto.load_private_key_from_pem(priv_pem.encode())
 
-    signer_data = nonce + ciphertext + tag  # puedes ampliar con AAD si luego la añades
+    signer_data = nonce + ciphertext + tag
     signature = sender_priv.sign(
         signer_data,
         asy_padding.PSS(
@@ -183,7 +158,8 @@ def cmd_send(args: argparse.Namespace) -> None:
             """,
             (sender, recipient, ciphertext, enc_key, nonce, tag, signature),
         )
-    audit(sender, "SEND", "AES-256-GCM|RSA-OAEP|RSA-PSS", 3072, f"to={recipient}, bytes={len(ciphertext)}")
+
+    audit(sender, "SEND", "AES-256-GCM|RSA-OAEP|RSA-PSS", 3072, f"to={recipient}")
     print(f"[OK] Mensaje cifrado enviado a '{recipient}'.")
 
 
@@ -226,7 +202,7 @@ def cmd_read(args: argparse.Namespace) -> None:
         print(f"[ERR] Ese mensaje no es para '{user}'.")
         return
 
-    # 1) Verificar firma con la pública del emisor
+    # 1) Verificar firma
     sender_pub_pem = get_user_pubkey_pem(sender)
     if not sender_pub_pem:
         print(f"[ERR] El emisor '{sender}' no tiene clave pública registrada.")
@@ -248,17 +224,16 @@ def cmd_read(args: argparse.Namespace) -> None:
         print(f"[ERR] Firma inválida: {e}")
         return
 
-    # 2) Cargar privada del destinatario y desenvolver la clave de sesión
-    priv_blob_path = user_privkey_path(user)
-    if not priv_blob_path.exists():
-        print(f"[ERR] No encuentro la clave privada de '{user}' en keystore.")
+    # 2) Cargar privada del destinatario
+    priv_path = Path(f"{user}_private.pem")
+    if not priv_path.exists():
+        print(f"[ERR] No se encontró la clave privada de '{user}' ({priv_path}).")
         return
-    priv_blob = priv_blob_path.read_bytes()
-    user_priv = keystore.load_encrypted_private_key(priv_blob, pwd)
+    priv_pem = priv_path.read_text()
+    user_priv = crypto.load_private_key_from_pem(priv_pem.encode())
 
+    # 3) Descifrar clave de sesión y mensaje
     session_key = crypto.decrypt_session_key_rsa_oaep(enc_key, user_priv)
-
-    # 3) Descifrar el mensaje con AES-GCM
     try:
         plaintext = crypto.decrypt_message_aes_gcm(ciphertext, session_key, nonce, tag)
     except Exception as e:
@@ -271,50 +246,41 @@ def cmd_read(args: argparse.Namespace) -> None:
     print("-------------------\n")
 
 
-# ==============================
 # Parser CLI
-# ==============================
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="chat-seguro",
         description="Chat seguro en Python (Criptografía UC3M)",
     )
 
-    # Flag global: init-db
     parser.add_argument("--init-db", action="store_true",
                         help="Crea la base de datos si no existe")
     parser.add_argument("--force", action="store_true",
                         help="(con --init-db) Fuerza recreación de la base de datos")
 
-    sub = parser.add_subparsers(dest="cmd")  # NOTA: sin required, para permitir solo --init-db
+    sub = parser.add_subparsers(dest="cmd")
 
-    # pki init-root
     pki_root = sub.add_parser("pki-init-root", help="Inicializa la CA raíz")
     pki_root.set_defaults(func=cmd_pki_init_root)
 
-    # register
     register = sub.add_parser("register", help="Registra un nuevo usuario")
-    register.add_argument("--user", required=True, help="Nombre de usuario")
+    register.add_argument("--user", required=True)
     register.set_defaults(func=cmd_register)
 
-    # login
     login = sub.add_parser("login", help="Inicia sesión (verificación de credenciales)")
     login.add_argument("--user", required=True)
     login.set_defaults(func=cmd_login)
 
-    # send
     send = sub.add_parser("send", help="Envía un mensaje cifrado")
-    send.add_argument("--to", required=True, help="Destinatario")
-    send.add_argument("--message", required=True, help="Texto del mensaje")
+    send.add_argument("--to", required=True)
+    send.add_argument("--message", required=True)
     send.set_defaults(func=cmd_send)
 
-    # inbox
     inbox = sub.add_parser("inbox", help="Muestra bandeja de entrada")
     inbox.set_defaults(func=cmd_inbox)
 
-    # read
     read = sub.add_parser("read", help="Lee y descifra un mensaje")
-    read.add_argument("--id", type=int, required=True, help="ID del mensaje")
+    read.add_argument("--id", type=int, required=True)
     read.set_defaults(func=cmd_read)
 
     return parser
@@ -325,14 +291,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    # Permitir ejecutar solo --init-db (opcionalmente con --force)
     if args.init_db:
         init_db(force=getattr(args, "force", False))
-        # si no hay subcomando, terminamos aquí
         if args.cmd is None:
             return 0
 
-    # Ejecutar subcomando (si lo hay)
     if hasattr(args, "func"):
         args.func(args)
         return 0

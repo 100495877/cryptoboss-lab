@@ -7,7 +7,6 @@ DB_PATH = ROOT / "chat.db"
 
 
 def get_connection():
-    """Devuelve una conexión SQLite abierta (usa context manager en cada operación)."""
     return sqlite3.connect(DB_PATH)
 
 
@@ -35,11 +34,9 @@ def register_user(username: str, password: str) -> bool:
         return False
 
 
-# ==============================
+
 #  LOGIN DE USUARIO
-# ==============================
 def verify_login(username: str, password: str) -> bool:
-    """Verifica la contraseña del usuario."""
     with get_connection() as con:
         cur = con.cursor()
         cur.execute("SELECT pwd_hash FROM users WHERE username = ?", (username,))
