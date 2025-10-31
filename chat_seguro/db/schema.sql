@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS users(
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     username   TEXT UNIQUE NOT NULL,
     pwd_hash   TEXT NOT NULL,
-    encrypted_private_key BLOB,  -- clave privada cifrada (añadida para keystore)
+    encrypted_private_key BLOB,
     cert_pem   TEXT,         -- certificado X.509 del usuario (PEM)
     pubkey_pem TEXT,         -- clave pública (si la guardamos aparte)
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -22,15 +22,6 @@ CREATE TABLE IF NOT EXISTS messages(
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS pki_certs(
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    subject    TEXT NOT NULL,
-    pem        TEXT NOT NULL, -- certificado en PEM
-    issuer     TEXT NOT NULL,
-    is_ca      INTEGER DEFAULT 0, -- 1 si es CA
-    valid_from TEXT,
-    valid_to   TEXT
-);
 
 CREATE TABLE IF NOT EXISTS audit(
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
