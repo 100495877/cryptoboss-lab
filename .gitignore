@@ -16,3 +16,5 @@ htmlcov/
 # OS files
 Thumbs.db
 desktop.ini
+
+venv/

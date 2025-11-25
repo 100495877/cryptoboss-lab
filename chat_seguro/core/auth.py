@@ -10,9 +10,9 @@ def get_connection():
     return sqlite3.connect(DB_PATH)
 
 
-# ==============================
+
 #  REGISTRO DE USUARIO
-# ==============================
+
 def register_user(username: str, password: str) -> bool:
     """Registra un nuevo usuario con contraseña hasheada."""
     pwd_bytes = password.encode("utf-8")

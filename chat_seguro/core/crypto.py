@@ -4,7 +4,7 @@ Módulo de cifrado simétrico y asimétrico para mensajes.
 - RSA-OAEP: cifrado de la clave de sesión
 - PBKDF2: derivación de claves a partir de contraseñas
 """
-
+from __future__ import annotations
 import os
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives import hashes, serialization
@@ -42,7 +42,7 @@ def encrypt_message_aes_gcm(plaintext: str) -> tuple[bytes, bytes, bytes, bytes]
     """
     Cifra un mensaje con AES-256-GCM.
 
-    Args:
+    Argumentos:
         plaintext: Mensaje en texto plano
 
     Returns:

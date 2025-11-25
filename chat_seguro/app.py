@@ -6,20 +6,17 @@ import sqlite3
 import sys
 from pathlib import Path
 from getpass import getpass
-from core import auth
-from core import crypto
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import padding as asy_padding
+from chat_seguro.core import auth, crypto, sign, keystore, pki
 
 # Rutas
-ROOT = Path(__file__).resolve().parent.parent  # .../cryptoboss-lab/chat_seguro
+ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = ROOT / "chat.db"
 SCHEMA_PATH = ROOT / "chat_seguro" / "db" / "schema.sql"
 
 
-# ==============================
+
 # Utilidades de BD
-# ==============================
+
 def db() -> sqlite3.Connection:
     return sqlite3.connect(DB_PATH)
 
@@ -47,6 +44,16 @@ def get_user_pubkey_pem(username: str) -> bytes | None:
         return row[0].encode("utf-8") if isinstance(row[0], str) else row[0]
 
 
+def get_user_encrypted_privkey(username: str) -> bytes | None:
+    """Obtiene la clave privada cifrada de un usuario desde la BD."""
+    with db() as con:
+        cur = con.execute("SELECT encrypted_private_key FROM users WHERE username=?", (username,))
+        row = cur.fetchone()
+        if not row or not row[0]:
+            return None
+        return row[0]
+
+
 # Inicialización de BD
 def init_db(force: bool = False) -> None:
     """Crea la base de datos si no existe (o la recrea si force=True)."""
@@ -61,16 +68,45 @@ def init_db(force: bool = False) -> None:
     print(f"[DB] Inicializada en {DB_PATH}")
 
 
-# Comandos
-def cmd_pki_init_root(_: argparse.Namespace) -> None:
-    print("[PKI] init-root (pendiente de implementar)")
-    audit(None, "PKI_INIT_ROOT")
+
+# COMANDOS
+
+
+def cmd_pki_init_root(args: argparse.Namespace) -> None:
+    """Inicializa la CA raíz de la PKI."""
+    print("[PKI] Inicializando CA raíz...")
+    
+    # Verificar si ya existe
+    try:
+        test_pwd = getpass("Contraseña para la CA raíz (si ya existe, cancela con Ctrl+C): ")
+        pki.load_ca_from_db(DB_PATH, test_pwd)
+        print("[PKI] ⚠️  La CA raíz ya existe y la contraseña es correcta.")
+        return
+    except (ValueError, KeyboardInterrupt):
+        pass
+    
+    ca_pwd1 = getpass("Introduce contraseña para la CA raíz: ")
+    ca_pwd2 = getpass("Repite la contraseña: ")
+    
+    if ca_pwd1 != ca_pwd2:
+        print("[ERR] Las contraseñas no coinciden.")
+        return
+    
+    try:
+        pki.init_pki(DB_PATH, ca_pwd1)
+        audit(None, "PKI_INIT_ROOT", "RSA-4096|X509v3", 4096, "CA raíz creada")
+        print("[OK] CA raíz inicializada correctamente.")
+    except Exception as e:
+        print(f"[ERR] Error al inicializar PKI: {e}")
+        audit(None, "PKI_INIT_ROOT_FAILED", details=str(e))
 
 
 def cmd_register(args: argparse.Namespace) -> None:
+    """Registra un nuevo usuario con claves RSA cifradas."""
     username = args.user
     pwd1 = getpass("Introduce una contraseña: ")
     pwd2 = getpass("Repite la contraseña: ")
+    
     if pwd1 != pwd2:
         print("[ERR] Las contraseñas no coinciden.")
         return
@@ -79,37 +115,79 @@ def cmd_register(args: argparse.Namespace) -> None:
     if not ok:
         return
 
-    # Generar par RSA y guardar pública/privada en PEM
+    # Generar par RSA
     print("[KEYGEN] Generando par RSA 3072 bits…")
     priv, pub = crypto.generate_rsa_keypair(key_size=3072)
-
     pub_pem = crypto.serialize_public_key(pub).decode("utf-8")
-    priv_pem = crypto.serialize_private_key(priv).decode("utf-8")
 
-    # Guardar pública en BD
+    # Cifrar la clave privada con la contraseña del usuario
+    print("[KEYSTORE] Cifrando clave privada con tu contraseña...")
+    encrypted_blob = keystore.save_encrypted_private_key(
+        priv, pwd1, username, storage_path=None
+    )
+
+    # Guardar pública y privada cifrada en BD
     with db() as con:
         con.execute(
-            "UPDATE users SET pubkey_pem=? WHERE username=?",
-            (pub_pem, username),
+            "UPDATE users SET pubkey_pem=?, encrypted_private_key=? WHERE username=?",
+            (pub_pem, encrypted_blob, username),
         )
 
-    # Guardar privada sin cifrar (solo Lab1)
-    priv_path = Path(f"{username}_private.pem")
-    priv_path.write_text(priv_pem)
-    print(f"[OK] Clave privada guardada en {priv_path}")
-
-    audit(username, "REGISTER", "RSA-PSS|RSA-OAEP|AES-256-GCM", 3072, f"priv={priv_path.name}")
-    print(f"[OK] Usuario '{username}' registrado y listo.")
+    audit(username, "REGISTER", "RSA-PSS|RSA-OAEP|AES-256-GCM|AES-256-CBC", 3072,
+          "privkey_encrypted=True")
+    print(f"[OK] Usuario '{username}' registrado. Clave privada cifrada en BD.")
+    print(f"[INFO] Usa 'pki-issue --user {username}' para solicitar un certificado X.509.")
 
 
 def cmd_login(args: argparse.Namespace) -> None:
+    """Verifica las credenciales de un usuario."""
     username = args.user
     pwd = getpass("Introduce tu contraseña: ")
     if auth.verify_login(username, pwd):
         audit(username, "LOGIN")
 
 
+def cmd_pki_issue(args: argparse.Namespace) -> None:
+    """Emite un certificado X.509 para un usuario."""
+    username = args.user
+    
+    # Verificar que el usuario existe
+    with db() as con:
+        cur = con.execute("SELECT encrypted_private_key FROM users WHERE username=?", (username,))
+        row = cur.fetchone()
+    
+    if not row or not row[0]:
+        print(f"[ERR] El usuario '{username}' no existe o no tiene claves generadas.")
+        print(f"[INFO] Primero debe registrarse con 'register --user {username}'")
+        return
+    
+    encrypted_privkey = row[0]
+    
+    # Pedir contraseña del usuario para descifrar su clave privada
+    user_pwd = getpass(f"Contraseña de '{username}': ")
+    try:
+        user_priv = keystore.load_encrypted_private_key(encrypted_privkey, user_pwd)
+    except ValueError as e:
+        print(f"[ERR] No se pudo descifrar la clave privada: {e}")
+        return
+    
+    # Pedir contraseña de la CA
+    ca_pwd = getpass("Contraseña de la CA raíz: ")
+    
+    # Email opcional
+    email = input(f"Email para '{username}' (opcional, Enter para omitir): ").strip() or None
+    
+    try:
+        cert = pki.issue_user_certificate(DB_PATH, username, user_priv, ca_pwd, email)
+        audit(username, "PKI_ISSUE_CERT", "RSA-3072|X509v3", 3072, f"cert_serial={cert.serial_number}")
+        print(f"[OK] Certificado emitido para '{username}'.")
+    except Exception as e:
+        print(f"[ERR] Error al emitir certificado: {e}")
+        audit(username, "PKI_ISSUE_CERT_FAILED", details=str(e))
+
+
 def cmd_send(args: argparse.Namespace) -> None:
+    """Envía un mensaje cifrado y firmado."""
     sender = input("Tu usuario (emisor): ").strip()
     pwd = getpass("Tu contraseña: ")
     if not auth.verify_login(sender, pwd):
@@ -128,28 +206,25 @@ def cmd_send(args: argparse.Namespace) -> None:
     # 2) Cifrar mensaje con AES-256-GCM
     ciphertext, session_key, nonce, tag = crypto.encrypt_message_aes_gcm(message)
 
-    # 3) Envolver la clave de sesión con RSA-OAEP (pública del destinatario)
+    # 3) Envolver la clave de sesión con RSA-OAEP
     enc_key = crypto.encrypt_session_key_rsa_oaep(session_key, recipient_pub)
 
-    # 4) Firmar el paquete con la privada del emisor
-    priv_path = Path(f"{sender}_private.pem")
-    if not priv_path.exists():
-        print(f"[ERR] No se encontró la clave privada de '{sender}' ({priv_path}).")
+    # 4) Cargar clave privada cifrada del emisor
+    encrypted_privkey = get_user_encrypted_privkey(sender)
+    if not encrypted_privkey:
+        print(f"[ERR] No se encontró la clave privada cifrada de '{sender}'.")
         return
-    priv_pem = priv_path.read_text()
-    sender_priv = crypto.load_private_key_from_pem(priv_pem.encode())
 
-    signer_data = nonce + ciphertext + tag
-    signature = sender_priv.sign(
-        signer_data,
-        asy_padding.PSS(
-            mgf=asy_padding.MGF1(hashes.SHA256()),
-            salt_length=asy_padding.PSS.MAX_LENGTH,
-        ),
-        hashes.SHA256(),
-    )
+    try:
+        sender_priv = keystore.load_encrypted_private_key(encrypted_privkey, pwd)
+    except ValueError as e:
+        print(f"[ERR] No se pudo descifrar la clave privada: {e}")
+        return
 
-    # 5) Guardar en BD
+    # 5) Firmar con sign.py
+    signature = sign.sign_message_package(sender_priv, nonce, ciphertext, tag)
+
+    # 6) Guardar en BD
     with db() as con:
         con.execute(
             """
@@ -160,10 +235,11 @@ def cmd_send(args: argparse.Namespace) -> None:
         )
 
     audit(sender, "SEND", "AES-256-GCM|RSA-OAEP|RSA-PSS", 3072, f"to={recipient}")
-    print(f"[OK] Mensaje cifrado enviado a '{recipient}'.")
+    print(f"[OK] Mensaje cifrado y firmado enviado a '{recipient}'.")
 
 
 def cmd_inbox(_: argparse.Namespace) -> None:
+    """Muestra la bandeja de entrada de un usuario."""
     user = input("Usuario (destinatario): ").strip()
     with db() as con:
         cur = con.execute(
@@ -171,6 +247,7 @@ def cmd_inbox(_: argparse.Namespace) -> None:
             (user,),
         )
         rows = cur.fetchall()
+    
     if not rows:
         print("[INBOX] No hay mensajes.")
         return
@@ -181,8 +258,11 @@ def cmd_inbox(_: argparse.Namespace) -> None:
 
 
 def cmd_read(args: argparse.Namespace) -> None:
+    """Lee y descifra un mensaje, verificando firma y certificado."""
     user = input("Tu usuario (destinatario): ").strip()
     pwd = getpass("Tu contraseña: ")
+    if not auth.verify_login(user, pwd):
+        return
 
     msg_id = int(args.id)
     with db() as con:
@@ -202,37 +282,50 @@ def cmd_read(args: argparse.Namespace) -> None:
         print(f"[ERR] Ese mensaje no es para '{user}'.")
         return
 
-    # 1) Verificar firma
+    # 1) Verificar firma con sign.py
     sender_pub_pem = get_user_pubkey_pem(sender)
     if not sender_pub_pem:
         print(f"[ERR] El emisor '{sender}' no tiene clave pública registrada.")
         return
     sender_pub = crypto.load_public_key_from_pem(sender_pub_pem)
 
-    verifier_data = nonce + ciphertext + tag
+    if not sign.verify_message_package(sender_pub, nonce, ciphertext, tag, signature):
+        print(f"[ERR] ⚠️  Firma inválida. El mensaje puede haber sido manipulado.")
+        return
+    print("[OK] ✓ Firma verificada correctamente.")
+
+    # 2) Verificar certificado del emisor (si existe)
     try:
-        sender_pub.verify(
-            signature,
-            verifier_data,
-            asy_padding.PSS(
-                mgf=asy_padding.MGF1(hashes.SHA256()),
-                salt_length=asy_padding.PSS.MAX_LENGTH,
-            ),
-            hashes.SHA256(),
-        )
+        sender_cert = pki.load_user_certificate(DB_PATH, sender)
+        if sender_cert:
+            ca_pwd = getpass("Contraseña de la CA (para verificar certificado): ")
+            try:
+                ca_private_key, ca_cert = pki.load_ca_from_db(DB_PATH, ca_pwd)
+                is_valid, msg = pki.verify_certificate(sender_cert, ca_cert)
+                if is_valid:
+                    print(f"[OK] ✓ Certificado del emisor válido.")
+                else:
+                    print(f"[WARN] ⚠️  Certificado del emisor inválido: {msg}")
+            except ValueError:
+                print(f"[WARN] Contraseña de CA incorrecta, no se pudo verificar certificado.")
+        else:
+            print(f"[WARN] El emisor no tiene certificado X.509.")
     except Exception as e:
-        print(f"[ERR] Firma inválida: {e}")
+        print(f"[WARN] No se pudo verificar el certificado: {e}")
+
+    # 3) Cargar clave privada cifrada del destinatario
+    encrypted_privkey = get_user_encrypted_privkey(user)
+    if not encrypted_privkey:
+        print(f"[ERR] No se encontró la clave privada cifrada de '{user}'.")
         return
 
-    # 2) Cargar privada del destinatario
-    priv_path = Path(f"{user}_private.pem")
-    if not priv_path.exists():
-        print(f"[ERR] No se encontró la clave privada de '{user}' ({priv_path}).")
+    try:
+        user_priv = keystore.load_encrypted_private_key(encrypted_privkey, pwd)
+    except ValueError as e:
+        print(f"[ERR] No se pudo descifrar la clave privada: {e}")
         return
-    priv_pem = priv_path.read_text()
-    user_priv = crypto.load_private_key_from_pem(priv_pem.encode())
 
-    # 3) Descifrar clave de sesión y mensaje
+    # 4) Descifrar clave de sesión y mensaje
     session_key = crypto.decrypt_session_key_rsa_oaep(enc_key, user_priv)
     try:
         plaintext = crypto.decrypt_message_aes_gcm(ciphertext, session_key, nonce, tag)
@@ -246,7 +339,10 @@ def cmd_read(args: argparse.Namespace) -> None:
     print("-------------------\n")
 
 
-# Parser CLI
+
+# PARSER CLI
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="chat-seguro",
@@ -260,9 +356,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub = parser.add_subparsers(dest="cmd")
 
+    # PKI
     pki_root = sub.add_parser("pki-init-root", help="Inicializa la CA raíz")
     pki_root.set_defaults(func=cmd_pki_init_root)
+    
+    pki_issue = sub.add_parser("pki-issue", help="Emite un certificado X.509 para un usuario")
+    pki_issue.add_argument("--user", required=True)
+    pki_issue.set_defaults(func=cmd_pki_issue)
 
+    # Usuarios
     register = sub.add_parser("register", help="Registra un nuevo usuario")
     register.add_argument("--user", required=True)
     register.set_defaults(func=cmd_register)
@@ -271,6 +373,7 @@ def build_parser() -> argparse.ArgumentParser:
     login.add_argument("--user", required=True)
     login.set_defaults(func=cmd_login)
 
+    # Mensajes
     send = sub.add_parser("send", help="Envía un mensaje cifrado")
     send.add_argument("--to", required=True)
     send.add_argument("--message", required=True)
