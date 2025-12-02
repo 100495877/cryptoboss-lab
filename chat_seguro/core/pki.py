@@ -1,5 +1,5 @@
 """
-Módulo de PKI (Public Key Infrastructure).
+Módulo de PKI (Public Key Infrastructure)
 - Certificados X.509 v3
 - CA raíz autofirmada
 - Firma de certificados de usuarios
@@ -16,6 +16,7 @@ from cryptography.x509.oid import NameOID, ExtensionOID
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives.asymmetric import padding
 
 
 #  CONSTANTES DE PKI
@@ -154,9 +155,9 @@ def generate_csr(username: str, private_key: rsa.RSAPrivateKey,
     return csr
 
 
-# ==============================
+
 #  FIRMA DE CERTIFICADOS POR LA CA
-# ==============================
+
 def sign_certificate(csr: x509.CertificateSigningRequest,
                      ca_private_key: rsa.RSAPrivateKey,
                      ca_cert: x509.Certificate,
@@ -238,9 +239,9 @@ def sign_certificate(csr: x509.CertificateSigningRequest,
     return certificate
 
 
-# ==============================
+
 #  VALIDACIÓN DE CERTIFICADOS
-# ==============================
+
 def verify_certificate(cert: x509.Certificate, ca_cert: x509.Certificate) -> tuple[bool, str]:
     """
     Verifica que un certificado haya sido firmado por la CA y sea válido.
@@ -250,13 +251,15 @@ def verify_certificate(cert: x509.Certificate, ca_cert: x509.Certificate) -> tup
         2. Fechas de validez (not_before, not_after)
         3. Emisor coincide con subject de la CA
     
-    Argumentos:
+    Args:
         cert: Certificado a verificar
         ca_cert: Certificado de la CA
     
     Returns:
         Tupla (es_válido, mensaje)
     """
+    from cryptography.hazmat.primitives.asymmetric import padding as asy_padding
+    
     # 1. Verificar que el emisor coincida
     if cert.issuer != ca_cert.subject:
         return False, f"Emisor no coincide: {cert.issuer} != {ca_cert.subject}"
@@ -274,7 +277,7 @@ def verify_certificate(cert: x509.Certificate, ca_cert: x509.Certificate) -> tup
         ca_public_key.verify(
             cert.signature,
             cert.tbs_certificate_bytes,
-            # Usar el algoritmo de firma del certificado
+            asy_padding.PKCS1v15(),  # ⭐ Padding requerido
             cert.signature_hash_algorithm,
         )
     except Exception as e:
@@ -613,37 +616,3 @@ def issue_user_certificate(db_path: Path, username: str, user_private_key: rsa.R
     print(f"      Válido hasta: {cert_info['not_after']}")
     
     return user_cert
-
-
-
-#  TESTING
-
-if __name__ == "__main__":
-    print("[TEST] Generando CA raíz de prueba...")
-    ca_priv, ca_cert = generate_root_ca(key_size=2048)
-    
-    ca_info = get_certificate_info(ca_cert)
-    print(f"  - CA: {ca_info['subject_cn']}")
-    print(f"  - Es CA: {ca_info['is_ca']}")
-    print(f"  - Válido hasta: {ca_info['not_after']}")
-    
-    print("\n[TEST] Generando certificado de usuario...")
-    user_priv = rsa.generate_private_key(65537, 2048, default_backend())
-    csr = generate_csr("alice", user_priv, "alice@example.com")
-    user_cert = sign_certificate(csr, ca_priv, ca_cert)
-    
-    user_info = get_certificate_info(user_cert)
-    print(f"  - Usuario: {user_info['subject_cn']}")
-    print(f"  - Emisor: {user_info['issuer_cn']}")
-    print(f"  - Es CA: {user_info['is_ca']}")
-    
-    print("\n[TEST] Verificando certificado...")
-    is_valid, msg = verify_certificate(user_cert, ca_cert)
-    print(f"  - Resultado: {'✓ VÁLIDO' if is_valid else '✗ INVÁLIDO'} - {msg}")
-    
-    print("\n[TEST] Verificando certificado con CA incorrecta...")
-    fake_ca_priv, fake_ca_cert = generate_root_ca(key_size=2048)
-    is_valid, msg = verify_certificate(user_cert, fake_ca_cert)
-    print(f"  - Resultado: {'✓ VÁLIDO' if is_valid else '✗ INVÁLIDO (esperado)'} - {msg}")
-    
-    print("\n[TEST] ✓ Todos los tests de PKI pasaron")

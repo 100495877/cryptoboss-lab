@@ -1,21 +1,22 @@
 
 -Guía de uso paso a paso 
-Paso 1: Inicializar la base de datos
 
+-Paso 1: Inicializar la base de datos
 
 bash
-python3 -m chat_seguro.app --init-db --force
+python -m chat_seguro.app --init-db --force
 ```
 
 **Salida esperada:**
 ```
 [DB] Inicializada en /Users/.../cryptoboss-lab/chat.db
 
-Paso 2: Crear la CA raíz (NUEVO en Eval. 2)
 
+
+-Paso 2: Crear la CA raíz 
 
 bash
-python3 -m chat_seguro.app pki-init-root
+python -m chat_seguro.app pki-init-root
 ```
 
 **Interacción:**
@@ -33,12 +34,11 @@ Repite la contraseña: ca123
 [OK] CA raíz inicializada correctamente.
 
 
-Paso 3: Registrar usuarios
+-Paso 3: Registrar usuarios
 Registrar a Alice:
 
-
 bash
-python3 -m chat_seguro.app register --user alice
+python -m chat_seguro.app register --user alice
 ```
 
 **Interacción:**
@@ -49,11 +49,12 @@ Repite la contraseña: alice123
 [KEYSTORE] Cifrando clave privada con tu contraseña...
 [OK] Usuario 'alice' registrado. Clave privada cifrada en BD.
 [INFO] Usa 'pki-issue --user alice' para solicitar un certificado X.509.
+
+
 Registrar a Bob:
 
-
 bash
-python3 -m chat_seguro.app register --user bob
+python -m chat_seguro.app register --user bob
 ```
 ```
 Introduce una contraseña: bob456
@@ -62,12 +63,12 @@ Repite la contraseña: bob456
 [KEYSTORE] Cifrando clave privada con tu contraseña...
 [OK] Usuario 'bob' registrado. Clave privada cifrada en BD.
 
-Paso 4: Emitir certificados X.509 
+
+-Paso 4: Emitir certificados X.509 
 Certificado para Alice:
 
-
 bash
-python3 -m chat_seguro.app pki-issue --user alice
+python -m chat_seguro.app pki-issue --user alice
 ```
 
 **Interacción:**
@@ -83,11 +84,13 @@ Email para 'alice' (opcional, Enter para omitir): alice@uc3m.es
       Serial: 987654321...
       Válido hasta: 2026-11-13T...
 [OK] Certificado emitido para 'alice'.
+
+
+
 Certificado para Bob:
 
-
 bash
-python3 -m chat_seguro.app pki-issue --user bob
+python -m chat_seguro.app pki-issue --user bob
 ```
 ```
 Contraseña de 'bob': bob456
@@ -95,11 +98,11 @@ Contraseña de la CA raíz: ca123
 Email para 'bob' (opcional, Enter para omitir): [Enter]
 [PKI] ✓ Certificado emitido para 'bob'...
 
-Paso 5: Alice envía un mensaje cifrado a Bob
 
+-Paso 5: Alice envía un mensaje cifrado a Bob
 
 bash
-python3 -m chat_seguro.app send --to bob --message "Hola Bob! Este es un mensaje super secreto"
+python -m chat_seguro.app send --to bob --message "Hola Bob! Este es un mensaje super secreto"
 ```
 
 **Interacción:**
@@ -114,11 +117,12 @@ qué pasó?:
 3. Se firmó el paquete completo con RSA-PSS (clave privada de Alice)
 4. Todo se guardó en la base de datos
 
-Paso 6: Bob revisa su bandeja de entrada
 
+
+-Paso 6: Bob revisa su bandeja de entrada
 
 bash
-python3 -m chat_seguro.app inbox
+python -m chat_seguro.app inbox
 ```
 
 **Interacción:**
@@ -127,11 +131,11 @@ Usuario (destinatario): bob
 [INBOX] Mensajes para 'bob':
   - id=1  de=alice  fecha=2025-11-13 15:30:42
 
-Paso 7: Bob lee el mensaje (VERIFICA FIRMA Y CERTIFICADO)
 
+-Paso 7: Bob lee el mensaje (VERIFICA FIRMA Y CERTIFICADO)
 
 bash
-python3 -m chat_seguro.app read --id 1
+python -m chat_seguro.app read --id 1
 ```
 
 **Interacción:**
@@ -150,23 +154,23 @@ Antes de mostrar el mensaje, se verifica:
 2. ✓ Certificado X.509 (que Alice realmente es Alice)
 3. ✓ Descifrado AES-GCM (confidencialidad)
 
-Paso 8: Bob responde a Alice
 
+-Paso 8: Bob responde a Alice
 
 bash
-python3 -m chat_seguro.app send --to alice --message "Recibido, Alice! Todo perfecto"
+python -m chat_seguro.app send --to alice --message "Recibido, Alice! Todo perfecto"
 ```
 ```
 Tu usuario (emisor): bob
 Tu contraseña: bob456
 [OK] Mensaje cifrado y firmado enviado a 'alice'.
 
-Paso 9: Alice lee la respuesta
 
+-Paso 9: Alice lee la respuesta
 
 bash
 # Ver bandeja
-python3 -m chat_seguro.app inbox
+python -m chat_seguro.app inbox
 ```
 ```
 Usuario (destinatario): alice
@@ -176,7 +180,7 @@ Usuario (destinatario): alice
 
 bash
 # Leer mensaje
-python3 -m chat_seguro.app read --id 2
+python -m chat_seguro.app read --id 2
 ```
 ```
 Tu usuario (destinatario): alice
